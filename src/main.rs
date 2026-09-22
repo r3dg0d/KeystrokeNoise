@@ -7,6 +7,7 @@ use audio::AudioEngine;
 use clap::{Parser, Subcommand};
 use config::{Category, Config};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,10 +48,11 @@ fn notify_toggle(on: bool) {
 fn ensure_default_sounds() -> Result<()> {
     let assets = Config::assets_dir();
     std::fs::create_dir_all(&assets)?;
-    // Copy packaged defaults if user sounds missing.
     let exe = std::env::current_exe().unwrap_or_default();
     let candidates = [
-        exe.parent().map(|p| p.join("../share/keystroke-noise/sounds")).unwrap_or_default(),
+        exe.parent()
+            .map(|p| p.join("../share/keystroke-noise/sounds"))
+            .unwrap_or_default(),
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
     ];
     for name in ["normal.wav", "space.wav", "enter.wav", "modifier.wav"] {
@@ -73,7 +75,10 @@ fn run_daemon() -> Result<()> {
     ensure_default_sounds()?;
     let mut cfg = Config::load()?;
     let mut engine = AudioEngine::new(&cfg)?;
-    let device = input::open_keyboard(&cfg.device)?;
+    let mut devices = input::open_keyboards(&cfg.device)?;
+    for (_path, dev) in &devices {
+        input::set_nonblocking(dev)?;
+    }
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -88,11 +93,12 @@ fn run_daemon() -> Result<()> {
         let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
     }
 
-    eprintln!("keystroke-noise: listening (no key content is logged)");
+    eprintln!(
+        "keystroke-noise: listening on {} keyboard device(s) (no key content is logged)",
+        devices.len()
+    );
 
-    let mut device = device;
     while running.load(Ordering::SeqCst) {
-        // Hot-reload config on change.
         while let Ok(Ok(event)) = rx.try_recv() {
             use notify::EventKind;
             if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
@@ -103,18 +109,70 @@ fn run_daemon() -> Result<()> {
             }
         }
 
-        match device.fetch_events() {
-            Ok(events) => {
-                for ev in events {
-                    if let Some(cat) = input::event_category(&ev) {
-                        engine.play(cat, &cfg);
+        // poll(2) across all keyboard fds
+        let mut fds: Vec<libc::pollfd> = devices
+            .iter()
+            .map(|(_, d)| libc::pollfd {
+                fd: d.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 50) };
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err).context("poll input devices");
+        }
+
+        for (i, (_path, device)) in devices.iter_mut().enumerate() {
+            if fds[i].revents == 0 {
+                continue;
+            }
+            match device.fetch_events() {
+                Ok(events) => {
+                    for ev in events {
+                        if let Some(cat) = input::event_category(&ev) {
+                            engine.play(cat, &cfg);
+                        }
                     }
                 }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(err) => {
+                    // Device disappeared (unplug) — drop it and keep going.
+                    eprintln!("keystroke-noise: device read error, dropping: {err}");
+                    fds[i].revents = 0;
+                    // mark for removal via path index
+                    // handled below by rebuilding if needed
+                }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Drop broken devices (EIO / ENODEV typically)
+        let before = devices.len();
+        devices.retain(|(_, d)| {
+            // If fd still looks open; cheap check via fcntl
+            let fd = d.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            flags >= 0
+        });
+        if devices.is_empty() {
+            // Rescan after a short pause (hotplug)
+            std::thread::sleep(Duration::from_millis(500));
+            if let Ok(new_devs) = input::open_keyboards(&cfg.device) {
+                for (_p, d) in &new_devs {
+                    let _ = input::set_nonblocking(d);
+                }
+                devices = new_devs;
             }
-            Err(err) => return Err(err).context("read input events"),
+        } else if devices.len() != before {
+            eprintln!(
+                "keystroke-noise: now listening on {} keyboard device(s)",
+                devices.len()
+            );
         }
     }
     Ok(())
@@ -134,6 +192,16 @@ fn main() -> Result<()> {
             println!("enabled={}", cfg.enabled);
             println!("volume={}", cfg.volume);
             println!("config={}", Config::config_path().display());
+            match input::open_keyboards(&cfg.device) {
+                Ok(devs) => {
+                    println!("keyboards={}", devs.len());
+                    for (p, d) in &devs {
+                        let name = d.name().unwrap_or("unknown");
+                        println!("  {} ({name})", p.display());
+                    }
+                }
+                Err(e) => println!("keyboards=0 ({e})"),
+            }
         }
         Cmd::Toggle => {
             let mut cfg = Config::load()?;
@@ -152,8 +220,11 @@ fn main() -> Result<()> {
                 "modifier" | "shift" | "backspace" => Category::Modifier,
                 other => anyhow::bail!("unknown category: {other}"),
             };
-            engine.play(cat, &cfg);
-            std::thread::sleep(Duration::from_millis(200));
+            for _ in 0..3 {
+                engine.play(cat, &cfg);
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            std::thread::sleep(Duration::from_millis(350));
         }
         Cmd::Daemon => run_daemon()?,
     }

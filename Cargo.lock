@@ -668,6 +668,7 @@ dependencies = [
  "ctrlc",
  "directories",
  "evdev",
+ "libc",
  "notify",
  "rodio",
  "serde",
