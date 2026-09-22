@@ -194,7 +194,7 @@ fn main() -> Result<()> {
             println!("config={}", Config::config_path().display());
             match input::open_input_devices(&cfg.device, cfg.mouse_enabled) {
                 Ok(devs) => {
-                    println!("keyboards={}", devs.len());
+                    println!("devices={}", devs.len());
                     for (p, d) in &devs {
                         let name = d.name().unwrap_or("unknown");
                         println!("  {} ({name})", p.display());
