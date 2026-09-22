@@ -14,6 +14,9 @@ pub struct AudioEngine {
     space: Vec<Vec<u8>>,
     enter: Vec<Vec<u8>>,
     modifier: Vec<Vec<u8>>,
+    mouse_left: Vec<Vec<u8>>,
+    mouse_middle: Vec<Vec<u8>>,
+    mouse_right: Vec<Vec<u8>>,
 }
 
 fn now_seed() -> u64 {
@@ -31,7 +34,6 @@ fn pick<'a>(bank: &'a [Vec<u8>], seed: u64) -> &'a [u8] {
     &bank[i]
 }
 
-/// Mild ±2% speed variation — real samples sound wrong with heavy pitch shifts.
 fn jitter_speed(seed: u64) -> f32 {
     let x = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     let r = ((x >> 33) as f32) / (u32::MAX as f32);
@@ -42,14 +44,13 @@ fn load_file(path: &PathBuf) -> Result<Vec<u8>> {
     std::fs::read(path).with_context(|| format!("load sound {}", path.display()))
 }
 
-fn load_bank(cfg: &Config, primary: &str, glob_prefix: &str) -> Result<Vec<Vec<u8>>> {
+fn load_bank(cfg: &Config, primary: &str, subdir: &str, glob_prefix: &str) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
     let primary_path = cfg.sound_path(primary);
     if primary_path.is_file() {
         out.push(load_file(&primary_path)?);
     }
-    // Optional bank: ~/.config/keystroke-noise/sounds/buckle/<prefix>-*.wav
-    let bank_dir = Config::assets_dir().join("buckle");
+    let bank_dir = Config::assets_dir().join(subdir);
     if bank_dir.is_dir() {
         let mut paths: Vec<_> = std::fs::read_dir(&bank_dir)
             .into_iter()
@@ -72,7 +73,7 @@ fn load_bank(cfg: &Config, primary: &str, glob_prefix: &str) -> Result<Vec<Vec<u
         }
     }
     if out.is_empty() {
-        anyhow::bail!("no sounds loaded for {primary} / {glob_prefix}*");
+        anyhow::bail!("no sounds loaded for {primary} / {subdir}/{glob_prefix}*");
     }
     Ok(out)
 }
@@ -84,10 +85,15 @@ impl AudioEngine {
             _stream: stream,
             handle,
             gate: Arc::new(Mutex::new(())),
-            normal: load_bank(cfg, &cfg.normal_sound, "normal-")?,
-            space: load_bank(cfg, &cfg.space_sound, "space")?,
-            enter: load_bank(cfg, &cfg.enter_sound, "enter")?,
-            modifier: load_bank(cfg, &cfg.modifier_sound, "modifier")?,
+            normal: load_bank(cfg, &cfg.normal_sound, "buckle", "normal-")?,
+            space: load_bank(cfg, &cfg.space_sound, "buckle", "space")?,
+            enter: load_bank(cfg, &cfg.enter_sound, "buckle", "enter")?,
+            modifier: load_bank(cfg, &cfg.modifier_sound, "buckle", "modifier")?,
+            mouse_left: load_bank(cfg, &cfg.mouse_left_sound, "mouse", "mouse-left")?,
+            mouse_middle: load_bank(cfg, &cfg.mouse_middle_sound, "mouse", "mouse-middle")
+                .or_else(|_| load_bank(cfg, &cfg.mouse_middle_sound, "mouse", "mouse-left"))?,
+            mouse_right: load_bank(cfg, &cfg.mouse_right_sound, "mouse", "mouse-right")
+                .or_else(|_| load_bank(cfg, &cfg.mouse_right_sound, "mouse", "mouse-left"))?,
         })
     }
 
@@ -105,6 +111,9 @@ impl AudioEngine {
             Category::Space => &self.space,
             Category::Enter => &self.enter,
             Category::Modifier => &self.modifier,
+            Category::MouseLeft => &self.mouse_left,
+            Category::MouseMiddle => &self.mouse_middle,
+            Category::MouseRight => &self.mouse_right,
         };
         let seed = now_seed() ^ ((cat as u64) << 17);
         let bytes = pick(bank, seed);
@@ -116,6 +125,7 @@ impl AudioEngine {
             Category::Space => cfg.space_volume,
             Category::Enter => cfg.enter_volume,
             Category::Modifier => cfg.modifier_volume,
+            Category::MouseLeft | Category::MouseMiddle | Category::MouseRight => cfg.mouse_volume,
         };
         let vol = (cfg.volume * cat_vol).clamp(0.0, 1.0);
         let speed = jitter_speed(seed);

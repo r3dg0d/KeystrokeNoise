@@ -75,7 +75,7 @@ fn run_daemon() -> Result<()> {
     ensure_default_sounds()?;
     let mut cfg = Config::load()?;
     let mut engine = AudioEngine::new(&cfg)?;
-    let mut devices = input::open_keyboards(&cfg.device)?;
+    let mut devices = input::open_input_devices(&cfg.device, cfg.mouse_enabled)?;
     for (_path, dev) in &devices {
         input::set_nonblocking(dev)?;
     }
@@ -94,7 +94,7 @@ fn run_daemon() -> Result<()> {
     }
 
     eprintln!(
-        "keystroke-noise: listening on {} keyboard device(s) (no key content is logged)",
+        "keystroke-noise: listening on {} input device(s) (no key/button content is logged)",
         devices.len()
     );
 
@@ -135,7 +135,7 @@ fn run_daemon() -> Result<()> {
             match device.fetch_events() {
                 Ok(events) => {
                     for ev in events {
-                        if let Some(cat) = input::event_category(&ev) {
+                        if let Some(cat) = input::event_category(&ev, cfg.mouse_enabled) {
                             engine.play(cat, &cfg);
                         }
                     }
@@ -162,7 +162,7 @@ fn run_daemon() -> Result<()> {
         if devices.is_empty() {
             // Rescan after a short pause (hotplug)
             std::thread::sleep(Duration::from_millis(500));
-            if let Ok(new_devs) = input::open_keyboards(&cfg.device) {
+            if let Ok(new_devs) = input::open_input_devices(&cfg.device, cfg.mouse_enabled) {
                 for (_p, d) in &new_devs {
                     let _ = input::set_nonblocking(d);
                 }
@@ -170,7 +170,7 @@ fn run_daemon() -> Result<()> {
             }
         } else if devices.len() != before {
             eprintln!(
-                "keystroke-noise: now listening on {} keyboard device(s)",
+                "keystroke-noise: now listening on {} input device(s)",
                 devices.len()
             );
         }
@@ -192,7 +192,7 @@ fn main() -> Result<()> {
             println!("enabled={}", cfg.enabled);
             println!("volume={}", cfg.volume);
             println!("config={}", Config::config_path().display());
-            match input::open_keyboards(&cfg.device) {
+            match input::open_input_devices(&cfg.device, cfg.mouse_enabled) {
                 Ok(devs) => {
                     println!("keyboards={}", devs.len());
                     for (p, d) in &devs {
@@ -218,6 +218,9 @@ fn main() -> Result<()> {
                 "space" => Category::Space,
                 "enter" => Category::Enter,
                 "modifier" | "shift" | "backspace" => Category::Modifier,
+                "mouse" | "mouse-left" | "left" => Category::MouseLeft,
+                "mouse-middle" | "middle" => Category::MouseMiddle,
+                "mouse-right" | "right" => Category::MouseRight,
                 other => anyhow::bail!("unknown category: {other}"),
             };
             for _ in 0..3 {
