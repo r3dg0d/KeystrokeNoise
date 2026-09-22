@@ -200,7 +200,7 @@ fn main() -> Result<()> {
                         println!("  {} ({name})", p.display());
                     }
                 }
-                Err(e) => println!("keyboards=0 ({e})"),
+                Err(e) => println!("devices=0 ({e})"),
             }
         }
         Cmd::Toggle => {

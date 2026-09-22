@@ -128,16 +128,23 @@ impl AudioEngine {
             Category::MouseLeft | Category::MouseMiddle | Category::MouseRight => cfg.mouse_volume,
         };
         let vol = (cfg.volume * cat_vol).clamp(0.0, 1.0);
-        let speed = jitter_speed(seed);
+        let is_mouse = matches!(
+            cat,
+            Category::MouseLeft | Category::MouseMiddle | Category::MouseRight
+        );
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let Ok(decoder) = Decoder::new(BufReader::new(cursor)) else {
             return;
         };
-        let source = decoder.speed(speed);
+        // Mouse needs minimal latency: skip speed jitter (can add startup delay).
         let _guard = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(sink) = Sink::try_new(&self.handle) {
             sink.set_volume(vol);
-            sink.append(source);
+            if is_mouse {
+                sink.append(decoder);
+            } else {
+                sink.append(decoder.speed(jitter_speed(seed)));
+            }
             sink.detach();
         }
     }
