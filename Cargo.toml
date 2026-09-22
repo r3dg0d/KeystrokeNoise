@@ -1,0 +1,22 @@
+[package]
+name = "keystroke-noise"
+version = "0.1.0"
+edition = "2021"
+description = "Subtle mechanical keyboard sounds without logging key content"
+license = "MIT"
+authors = ["neo"]
+
+[[bin]]
+name = "keystroke-noise"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+evdev = "0.12"
+notify = "6"
+rodio = { version = "0.19", default-features = true }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "5"
+ctrlc = "3"
