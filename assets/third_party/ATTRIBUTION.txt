@@ -1,0 +1,5 @@
+Mouse click source recordings (CC0 / public domain):
+- BigSoundBank s0029 "Computer mouse" by Joseph SARDIN — https://bigsoundbank.com/computer-mouse-s0029.html
+- OpenGameArt "mouse click" by LFA — https://opengameart.org/content/mouse-click
+
+Processed (trim/EQ/pitch) derivatives used as KeystrokeNoise mouse banks.
