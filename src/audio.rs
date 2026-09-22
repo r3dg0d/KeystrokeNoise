@@ -2,49 +2,92 @@ use crate::config::{Category, Config};
 use anyhow::{Context, Result};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use std::io::BufReader;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct AudioEngine {
     _stream: OutputStream,
     handle: OutputStreamHandle,
-    /// Serialize sink creation lightly; overlaps are allowed via detach.
     gate: Arc<Mutex<()>>,
-    normal: Vec<u8>,
-    space: Vec<u8>,
-    enter: Vec<u8>,
-    modifier: Vec<u8>,
+    normal: Vec<Vec<u8>>,
+    space: Vec<Vec<u8>>,
+    enter: Vec<Vec<u8>>,
+    modifier: Vec<Vec<u8>>,
 }
 
-fn jitter_seed() -> u64 {
+fn now_seed() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(1)
 }
 
-/// Tiny deterministic-ish LCG so we avoid pulling in rand.
-fn jitter_factor(seed: u64) -> f32 {
+fn pick<'a>(bank: &'a [Vec<u8>], seed: u64) -> &'a [u8] {
+    if bank.is_empty() {
+        return &[];
+    }
+    let i = (seed.wrapping_mul(0x9E3779B97F4A7C15) >> 32) as usize % bank.len();
+    &bank[i]
+}
+
+/// Mild ±2% speed variation — real samples sound wrong with heavy pitch shifts.
+fn jitter_speed(seed: u64) -> f32 {
     let x = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     let r = ((x >> 33) as f32) / (u32::MAX as f32);
-    // ±4% pitch / speed variation for less machine-gun sameness
-    0.96 + r * 0.08
+    0.98 + r * 0.04
+}
+
+fn load_file(path: &PathBuf) -> Result<Vec<u8>> {
+    std::fs::read(path).with_context(|| format!("load sound {}", path.display()))
+}
+
+fn load_bank(cfg: &Config, primary: &str, glob_prefix: &str) -> Result<Vec<Vec<u8>>> {
+    let mut out = Vec::new();
+    let primary_path = cfg.sound_path(primary);
+    if primary_path.is_file() {
+        out.push(load_file(&primary_path)?);
+    }
+    // Optional bank: ~/.config/keystroke-noise/sounds/buckle/<prefix>-*.wav
+    let bank_dir = Config::assets_dir().join("buckle");
+    if bank_dir.is_dir() {
+        let mut paths: Vec<_> = std::fs::read_dir(&bank_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().and_then(|x| x.to_str()) == Some("wav")
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with(glob_prefix))
+                        .unwrap_or(false)
+            })
+            .collect();
+        paths.sort();
+        for p in paths {
+            if let Ok(bytes) = load_file(&p) {
+                out.push(bytes);
+            }
+        }
+    }
+    if out.is_empty() {
+        anyhow::bail!("no sounds loaded for {primary} / {glob_prefix}*");
+    }
+    Ok(out)
 }
 
 impl AudioEngine {
     pub fn new(cfg: &Config) -> Result<Self> {
         let (stream, handle) = OutputStream::try_default().context("open audio output")?;
-        let load = |path: std::path::PathBuf| -> Result<Vec<u8>> {
-            std::fs::read(&path).with_context(|| format!("load sound {}", path.display()))
-        };
         Ok(Self {
             _stream: stream,
             handle,
             gate: Arc::new(Mutex::new(())),
-            normal: load(cfg.sound_path(&cfg.normal_sound))?,
-            space: load(cfg.sound_path(&cfg.space_sound))?,
-            enter: load(cfg.sound_path(&cfg.enter_sound))?,
-            modifier: load(cfg.sound_path(&cfg.modifier_sound))?,
+            normal: load_bank(cfg, &cfg.normal_sound, "normal-")?,
+            space: load_bank(cfg, &cfg.space_sound, "space")?,
+            enter: load_bank(cfg, &cfg.enter_sound, "enter")?,
+            modifier: load_bank(cfg, &cfg.modifier_sound, "modifier")?,
         })
     }
 
@@ -57,12 +100,17 @@ impl AudioEngine {
         if !cfg.enabled {
             return;
         }
-        let bytes = match cat {
+        let bank = match cat {
             Category::Normal => &self.normal,
             Category::Space => &self.space,
             Category::Enter => &self.enter,
             Category::Modifier => &self.modifier,
         };
+        let seed = now_seed() ^ ((cat as u64) << 17);
+        let bytes = pick(bank, seed);
+        if bytes.is_empty() {
+            return;
+        }
         let cat_vol = match cat {
             Category::Normal => cfg.normal_volume,
             Category::Space => cfg.space_volume,
@@ -70,8 +118,8 @@ impl AudioEngine {
             Category::Modifier => cfg.modifier_volume,
         };
         let vol = (cfg.volume * cat_vol).clamp(0.0, 1.0);
-        let speed = jitter_factor(jitter_seed() ^ (cat as u64).wrapping_mul(0x9E3779B97F4A7C15));
-        let cursor = std::io::Cursor::new(bytes.clone());
+        let speed = jitter_speed(seed);
+        let cursor = std::io::Cursor::new(bytes.to_vec());
         let Ok(decoder) = Decoder::new(BufReader::new(cursor)) else {
             return;
         };
@@ -82,6 +130,5 @@ impl AudioEngine {
             sink.append(source);
             sink.detach();
         }
-        // Intentionally never log category or key material.
     }
 }
