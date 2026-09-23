@@ -98,6 +98,9 @@ fn run_daemon() -> Result<()> {
         devices.len()
     );
 
+    let mut last_rescan = std::time::Instant::now();
+    const RESCAN_EVERY: Duration = Duration::from_secs(2);
+
     while running.load(Ordering::SeqCst) {
         while let Ok(Ok(event)) = rx.try_recv() {
             use notify::EventKind;
@@ -128,8 +131,16 @@ fn run_daemon() -> Result<()> {
             return Err(err).context("poll input devices");
         }
 
+        // Indices that hit ENODEV/EIO — remove after the loop (don't mutate while iterating).
+        let mut dead: Vec<usize> = Vec::new();
         for (i, (_path, device)) in devices.iter_mut().enumerate() {
-            if fds[i].revents == 0 {
+            if fds.get(i).map(|f| f.revents).unwrap_or(0) == 0 {
+                continue;
+            }
+            // POLLERR / POLLHUP / POLLNVAL → device is gone
+            let re = fds[i].revents;
+            if re & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                dead.push(i);
                 continue;
             }
             match device.fetch_events() {
@@ -142,37 +153,65 @@ fn run_daemon() -> Result<()> {
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(err) => {
-                    // Device disappeared (unplug) — drop it and keep going.
-                    eprintln!("keystroke-noise: device read error, dropping: {err}");
-                    fds[i].revents = 0;
-                    // mark for removal via path index
-                    // handled below by rebuilding if needed
+                    // Device disappeared (unplug / node recycled) — drop immediately.
+                    // Note: the FD can still pass F_GETFD after ENODEV, so do not rely on fcntl.
+                    eprintln!(
+                        "keystroke-noise: device read error, dropping {}: {err}",
+                        _path.display()
+                    );
+                    dead.push(i);
                 }
             }
         }
-
-        // Drop broken devices (EIO / ENODEV typically)
-        let before = devices.len();
-        devices.retain(|(_, d)| {
-            // If fd still looks open; cheap check via fcntl
-            let fd = d.as_raw_fd();
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-            flags >= 0
-        });
-        if devices.is_empty() {
-            // Rescan after a short pause (hotplug)
-            std::thread::sleep(Duration::from_millis(500));
-            if let Ok(new_devs) = input::open_input_devices(&cfg.device, cfg.mouse_enabled) {
-                for (_p, d) in &new_devs {
-                    let _ = input::set_nonblocking(d);
-                }
-                devices = new_devs;
+        if !dead.is_empty() {
+            let mut remove = vec![false; devices.len()];
+            for i in dead {
+                remove[i] = true;
             }
-        } else if devices.len() != before {
+            let mut kept = Vec::with_capacity(devices.len());
+            for (i, item) in devices.into_iter().enumerate() {
+                if !remove[i] {
+                    kept.push(item);
+                }
+            }
+            devices = kept;
             eprintln!(
                 "keystroke-noise: now listening on {} input device(s)",
                 devices.len()
             );
+            // Force a rescan soon so hotplugged replacements are picked up.
+            last_rescan = std::time::Instant::now()
+                .checked_sub(RESCAN_EVERY)
+                .unwrap_or_else(std::time::Instant::now);
+        }
+
+        // Periodic hotplug rescan: add newly appeared devices even when some FDs remain.
+        // (Old bug: only rescanned when devices became empty, so a sticky dead FD blocked recovery.)
+        if last_rescan.elapsed() >= RESCAN_EVERY || devices.is_empty() {
+            last_rescan = std::time::Instant::now();
+            if let Ok(found) = input::open_input_devices(&cfg.device, cfg.mouse_enabled) {
+                let open_paths: std::collections::HashSet<_> =
+                    devices.iter().map(|(p, _)| p.clone()).collect();
+                let mut added = 0usize;
+                for (p, d) in found {
+                    if open_paths.contains(&p) {
+                        continue;
+                    }
+                    if input::set_nonblocking(&d).is_ok() {
+                        devices.push((p, d));
+                        added += 1;
+                    }
+                }
+                if added > 0 || devices.is_empty() {
+                    eprintln!(
+                        "keystroke-noise: hotplug rescan → {} device(s) (+{added})",
+                        devices.len()
+                    );
+                }
+            }
+            if devices.is_empty() {
+                std::thread::sleep(Duration::from_millis(400));
+            }
         }
     }
     Ok(())
