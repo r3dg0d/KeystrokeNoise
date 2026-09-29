@@ -1,0 +1,16 @@
+[Unit]
+Description=KeystrokeNoise mechanical typing + mouse click sounds
+Documentation=https://github.com/r3dg0d/KeystrokeNoise
+After=pipewire.service pipewire-pulse.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/keystroke-noise daemon
+Restart=on-failure
+RestartSec=2
+# Never elevate; needs membership in `input` or seat ACLs on /dev/input/event*
+NoNewPrivileges=true
+
+[Install]
+WantedBy=graphical-session.target

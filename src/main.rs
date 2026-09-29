@@ -13,7 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
-#[command(name = "keystroke-noise", version, about = "Mechanical key sounds without keylogging")]
+#[command(
+    name = "keystroke-noise",
+    version,
+    about = "Mechanical key/mouse sounds without keylogging",
+    long_about = "Subtle mechanical keyboard and mouse click sounds for Linux.\n\nKey identities are mapped to a coarse category (normal / space / enter / modifier / mouse-*) and discarded immediately. Nothing is stored or transmitted.\n\nNeeds read access to /dev/input/event* (input group or seat ACL). Uses PipeWire/Pulse via rodio."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -21,15 +26,18 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Run the sound daemon (default)
+    /// Run the sound daemon (default when no subcommand)
     Daemon,
-    /// Toggle enabled in config and print ON/OFF
+    /// Toggle enabled in config and print ON/OFF (also notify-send)
     Toggle,
-    /// Play one category: normal|space|enter|modifier
-    Test { category: String },
-    /// Write default config if missing
+    /// Play one sample: normal|space|enter|modifier|mouse-left|mouse-right|mouse-middle
+    Test {
+        /// Sound category to play once
+        category: String,
+    },
+    /// Write default config + seed sounds under ~/.config/keystroke-noise/
     Init,
-    /// Show status
+    /// Show enabled flag, devices, and config path
     Status,
 }
 
