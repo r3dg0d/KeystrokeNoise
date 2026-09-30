@@ -73,7 +73,21 @@ impl Config {
         }
         let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let cfg: Self = toml::from_str(&text).context("parse config.toml")?;
-        Ok(cfg)
+        Ok(cfg.sanitized())
+    }
+
+    /// Replace non-finite volumes (TOML allows `nan` / `inf`) with the defaults. Range is
+    /// enforced where the sound is played; a NaN would slip through `clamp` unchanged.
+    pub fn sanitized(mut self) -> Self {
+        let d = Self::default();
+        let fix = |v: f32, default: f32| if v.is_finite() { v } else { default };
+        self.volume = fix(self.volume, d.volume);
+        self.normal_volume = fix(self.normal_volume, d.normal_volume);
+        self.space_volume = fix(self.space_volume, d.space_volume);
+        self.enter_volume = fix(self.enter_volume, d.enter_volume);
+        self.modifier_volume = fix(self.modifier_volume, d.modifier_volume);
+        self.mouse_volume = fix(self.mouse_volume, d.mouse_volume);
+        self
     }
 
     pub fn save(&self) -> Result<()> {
@@ -104,4 +118,56 @@ pub enum Category {
     MouseLeft,
     MouseMiddle,
     MouseRight,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_round_trip_through_toml() {
+        let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.volume, cfg.volume);
+        assert_eq!(back.normal_sound, cfg.normal_sound);
+        assert!(back.enabled && back.mouse_enabled);
+    }
+
+    #[test]
+    fn a_partial_config_fills_in_defaults() {
+        let cfg: Config = toml::from_str("volume = 0.2\nenabled = false\n").unwrap();
+        assert_eq!(cfg.volume, 0.2);
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.space_sound, "space.wav");
+        assert!(cfg.mouse_enabled);
+    }
+
+    #[test]
+    fn unknown_or_mistyped_fields_are_reported_not_silently_used() {
+        assert!(toml::from_str::<Config>("volume = \"loud\"").is_err());
+    }
+
+    #[test]
+    fn non_finite_volumes_fall_back_to_defaults() {
+        let cfg: Config =
+            toml::from_str("volume = nan\nmouse_volume = inf\nnormal_volume = 0.5\n").unwrap();
+        let cfg = cfg.sanitized();
+        let d = Config::default();
+        assert_eq!(cfg.volume, d.volume);
+        assert_eq!(cfg.mouse_volume, d.mouse_volume);
+        assert_eq!(cfg.normal_volume, 0.5, "finite values are left alone");
+    }
+
+    #[test]
+    fn relative_sound_names_resolve_under_the_sounds_dir_and_absolute_ones_are_kept() {
+        let cfg = Config::default();
+        assert!(cfg
+            .sound_path("click.wav")
+            .starts_with(Config::assets_dir()));
+        assert_eq!(
+            cfg.sound_path("/opt/x/click.wav"),
+            PathBuf::from("/opt/x/click.wav")
+        );
+    }
 }

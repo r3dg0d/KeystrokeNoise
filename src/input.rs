@@ -28,6 +28,14 @@ pub fn categorize_key(key: Key) -> Category {
     }
 }
 
+/// True for the kernel's `BTN_*` blocks: misc/mouse/joystick/gamepad/digitizer/wheel
+/// (0x100-0x15f), the gamepad D-pad (0x220-0x223) and the trigger-happy block
+/// (0x2c0-0x2e7). Numeric on purpose: this runs on every key event and must not
+/// allocate or depend on `Debug` names.
+pub fn is_button_code(key: Key) -> bool {
+    matches!(key.code(), 0x100..=0x15f | 0x220..=0x223 | 0x2c0..=0x2e7)
+}
+
 pub fn categorize_button(key: Key) -> Option<Category> {
     match key {
         Key::BTN_LEFT => Some(Category::MouseLeft),
@@ -119,13 +127,112 @@ pub fn event_category(ev: &evdev::InputEvent, mouse_enabled: bool) -> Option<Cat
                 }
                 return None;
             }
-            // Ignore mouse buttons when already handled; skip pure BTN_* that we don't map
-            let name = format!("{key:?}");
-            if name.starts_with("BTN_") {
+            // Ignore BTN_* codes we don't map (gamepad, stylus, ...): they are not typing.
+            if is_button_code(key) {
                 return None;
             }
             Some(categorize_key(key))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evdev::InputEvent;
+
+    fn key_event(key: Key, value: i32) -> InputEvent {
+        InputEvent::new(EventType::KEY, key.code(), value)
+    }
+
+    #[test]
+    fn keys_map_to_the_right_sound_category() {
+        assert_eq!(categorize_key(Key::KEY_SPACE), Category::Space);
+        assert_eq!(categorize_key(Key::KEY_ENTER), Category::Enter);
+        assert_eq!(categorize_key(Key::KEY_KPENTER), Category::Enter);
+        for k in [
+            Key::KEY_LEFTSHIFT,
+            Key::KEY_BACKSPACE,
+            Key::KEY_TAB,
+            Key::KEY_ESC,
+            Key::KEY_RIGHTMETA,
+        ] {
+            assert_eq!(categorize_key(k), Category::Modifier, "{k:?}");
+        }
+        assert_eq!(categorize_key(Key::KEY_A), Category::Normal);
+        assert_eq!(categorize_key(Key::KEY_F5), Category::Normal);
+    }
+
+    #[test]
+    fn mouse_buttons_map_and_unknown_buttons_do_not() {
+        assert_eq!(categorize_button(Key::BTN_LEFT), Some(Category::MouseLeft));
+        assert_eq!(
+            categorize_button(Key::BTN_MIDDLE),
+            Some(Category::MouseMiddle)
+        );
+        assert_eq!(
+            categorize_button(Key::BTN_RIGHT),
+            Some(Category::MouseRight)
+        );
+        assert_eq!(categorize_button(Key::BTN_SIDE), Some(Category::MouseLeft));
+        assert_eq!(categorize_button(Key::BTN_SOUTH), None);
+        assert_eq!(categorize_button(Key::KEY_A), None);
+    }
+
+    /// The numeric BTN_ test must agree with evdev's own names for every named code.
+    /// (evdev prints "unknown key" for codes the kernel has not defined; inside a BTN_
+    /// block those are still buttons, so only named codes are compared.)
+    #[test]
+    fn button_ranges_match_evdev_names() {
+        for code in 0u16..0x300 {
+            let key = Key::new(code);
+            let name = format!("{key:?}");
+            if name.starts_with("unknown key") {
+                continue;
+            }
+            assert_eq!(
+                is_button_code(key),
+                name.starts_with("BTN_"),
+                "code {code:#x} ({name})"
+            );
+        }
+    }
+
+    #[test]
+    fn gamepad_dpad_and_undefined_button_codes_never_make_typing_sounds() {
+        assert_eq!(event_category(&key_event(Key::BTN_DPAD_UP, 1), true), None);
+        assert_eq!(event_category(&key_event(Key::new(0x10a), 1), true), None);
+        assert_eq!(
+            event_category(&key_event(Key::BTN_TRIGGER_HAPPY1, 1), true),
+            None
+        );
+    }
+
+    #[test]
+    fn only_key_down_makes_a_sound() {
+        assert!(is_key_down(1));
+        assert!(!is_key_down(0), "release");
+        assert!(!is_key_down(2), "autorepeat");
+        assert_eq!(
+            event_category(&key_event(Key::KEY_A, 1), true),
+            Some(Category::Normal)
+        );
+        assert_eq!(event_category(&key_event(Key::KEY_A, 0), true), None);
+        assert_eq!(event_category(&key_event(Key::KEY_A, 2), true), None);
+    }
+
+    #[test]
+    fn mouse_clicks_respect_the_mouse_setting_and_stray_buttons_are_ignored() {
+        assert_eq!(
+            event_category(&key_event(Key::BTN_LEFT, 1), true),
+            Some(Category::MouseLeft)
+        );
+        assert_eq!(event_category(&key_event(Key::BTN_LEFT, 1), false), None);
+        // A gamepad button is neither a key nor a mapped mouse button.
+        assert_eq!(event_category(&key_event(Key::BTN_SOUTH, 1), true), None);
+        // Non-key events (e.g. relative motion) never sound.
+        let motion = InputEvent::new(EventType::RELATIVE, 0, 5);
+        assert_eq!(event_category(&motion, true), None);
     }
 }

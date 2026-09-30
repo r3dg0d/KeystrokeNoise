@@ -149,3 +149,37 @@ impl AudioEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pick_handles_an_empty_bank_and_stays_in_range() {
+        assert!(pick(&[], 42).is_empty());
+        let bank = vec![vec![1u8], vec![2u8], vec![3u8]];
+        for seed in [0u64, 1, 7, u64::MAX, 0x9E3779B97F4A7C15] {
+            let got = pick(&bank, seed);
+            assert!(bank.iter().any(|b| b.as_slice() == got));
+        }
+        assert_eq!(pick(&bank, 99), pick(&bank, 99), "deterministic for a seed");
+    }
+
+    #[test]
+    fn pick_uses_every_sound_in_a_bank_over_many_seeds() {
+        let bank = vec![vec![1u8], vec![2u8], vec![3u8], vec![4u8]];
+        let mut seen = [false; 4];
+        for seed in 0..2000u64 {
+            seen[(pick(&bank, seed)[0] - 1) as usize] = true;
+        }
+        assert!(seen.iter().all(|&s| s), "{seen:?}");
+    }
+
+    #[test]
+    fn speed_jitter_stays_within_two_percent() {
+        for seed in (0..5000u64).map(|i| i.wrapping_mul(0x1234_5678_9ABC_DEF1)) {
+            let j = jitter_speed(seed);
+            assert!((0.98..=1.02).contains(&j), "{j}");
+        }
+    }
+}
