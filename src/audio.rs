@@ -26,7 +26,7 @@ fn now_seed() -> u64 {
         .unwrap_or(1)
 }
 
-fn pick<'a>(bank: &'a [Vec<u8>], seed: u64) -> &'a [u8] {
+fn pick(bank: &[Vec<u8>], seed: u64) -> &[u8] {
     if bank.is_empty() {
         return &[];
     }

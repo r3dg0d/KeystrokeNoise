@@ -105,17 +105,3 @@ pub enum Category {
     MouseMiddle,
     MouseRight,
 }
-
-impl Category {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Normal => "NORMAL",
-            Self::Space => "SPACE",
-            Self::Enter => "ENTER",
-            Self::Modifier => "MODIFIER",
-            Self::MouseLeft => "MOUSE_LEFT",
-            Self::MouseMiddle => "MOUSE_MIDDLE",
-            Self::MouseRight => "MOUSE_RIGHT",
-        }
-    }
-}
