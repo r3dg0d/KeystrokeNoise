@@ -149,6 +149,24 @@ pub fn sound_banks_reload_required(previous: &Config, next: &Config) -> bool {
         || previous.mouse_right_sound != next.mouse_right_sound
 }
 
+/// Config to keep when `AudioEngine::reload` fails.
+///
+/// The incoming `*_sound` paths were not loaded, so they must not replace the
+/// paths that still name the banks in memory. Volume, `enabled`, `device`, and
+/// `mouse_enabled` from `incoming` still apply. Does not open a device or read
+/// a WAV. Because the stored paths stay on the previous files, the next watch
+/// of the same bad config still reports `sound_banks_reload_required`.
+pub fn config_after_failed_bank_reload(previous: &Config, mut incoming: Config) -> Config {
+    incoming.normal_sound = previous.normal_sound.clone();
+    incoming.space_sound = previous.space_sound.clone();
+    incoming.enter_sound = previous.enter_sound.clone();
+    incoming.modifier_sound = previous.modifier_sound.clone();
+    incoming.mouse_left_sound = previous.mouse_left_sound.clone();
+    incoming.mouse_middle_sound = previous.mouse_middle_sound.clone();
+    incoming.mouse_right_sound = previous.mouse_right_sound.clone();
+    incoming
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Normal,
@@ -348,5 +366,43 @@ mod tests {
         next = prev.clone();
         next.mouse_right_sound = "other-right.wav".into();
         assert!(sound_banks_reload_required(&prev, &next));
+    }
+
+    #[test]
+    fn failed_bank_reload_keeps_previous_sound_paths() {
+        let prev = Config::default();
+        let mut incoming = prev.clone();
+        incoming.volume = 0.2;
+        incoming.enabled = false;
+        incoming.mouse_enabled = false;
+        incoming.device = "/dev/input/event9".into();
+        incoming.normal_sound = "missing-normal.wav".into();
+        incoming.space_sound = "missing-space.wav".into();
+        incoming.enter_sound = "missing-enter.wav".into();
+        incoming.modifier_sound = "missing-modifier.wav".into();
+        incoming.mouse_left_sound = "missing-left.wav".into();
+        incoming.mouse_middle_sound = "missing-middle.wav".into();
+        incoming.mouse_right_sound = "missing-right.wav".into();
+
+        let kept = config_after_failed_bank_reload(&prev, incoming.clone());
+        assert_eq!(kept.normal_sound, prev.normal_sound);
+        assert_eq!(kept.space_sound, prev.space_sound);
+        assert_eq!(kept.enter_sound, prev.enter_sound);
+        assert_eq!(kept.modifier_sound, prev.modifier_sound);
+        assert_eq!(kept.mouse_left_sound, prev.mouse_left_sound);
+        assert_eq!(kept.mouse_middle_sound, prev.mouse_middle_sound);
+        assert_eq!(kept.mouse_right_sound, prev.mouse_right_sound);
+        assert_eq!(kept.volume, 0.2);
+        assert!(!kept.enabled);
+        assert!(!kept.mouse_enabled);
+        assert_eq!(kept.device, "/dev/input/event9");
+        assert!(
+            !sound_banks_reload_required(&prev, &kept),
+            "kept paths must match the banks still loaded"
+        );
+        assert!(
+            sound_banks_reload_required(&kept, &incoming),
+            "the bad file must still look like a pending reload"
+        );
     }
 }

@@ -147,11 +147,19 @@ fn run_daemon() -> Result<()> {
                 if let Ok(new_cfg) = Config::load() {
                     let reopen = config::input_rescan_required(&cfg, &new_cfg);
                     let reload_banks = config::sound_banks_reload_required(&cfg, &new_cfg);
+                    let previous = cfg;
                     cfg = new_cfg;
                     // Volume and enabled are read in play(). Re-read WAVs only
                     // when a sound path changed, and never reopen PipeWire here.
+                    // A failed load keeps the previous paths: the banks did not
+                    // change, so config must not name files that are not loaded.
                     if reload_banks {
-                        let _ = engine.reload(&cfg);
+                        if let Err(err) = engine.reload(&cfg) {
+                            eprintln!(
+                                "keystroke-noise: sound reload failed, keeping previous banks: {err:#}"
+                            );
+                            cfg = config::config_after_failed_bank_reload(&previous, cfg);
+                        }
                     }
                     if reopen {
                         // Drop the previous set so the shared rescan rebuilds it.
