@@ -6,8 +6,10 @@ use anyhow::{Context, Result};
 use audio::AudioEngine;
 use clap::{Parser, Subcommand};
 use config::{Category, Config};
+use evdev::Device;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::os::fd::AsRawFd;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,6 +81,35 @@ fn ensure_default_sounds() -> Result<()> {
     Ok(())
 }
 
+/// Open the current device selection and append nodes that are not already held.
+/// Same path the periodic hotplug rescan uses. Does not close existing fds;
+/// a `device` / `mouse_enabled` change clears the vec first so this rebuilds the set.
+fn rescan_inputs(devices: &mut Vec<(PathBuf, Device)>, cfg: &Config) {
+    if let Ok(found) = input::open_input_devices(&cfg.device, cfg.mouse_enabled) {
+        let open_paths: std::collections::HashSet<_> =
+            devices.iter().map(|(p, _)| p.clone()).collect();
+        let mut added = 0usize;
+        for (p, d) in found {
+            if open_paths.contains(&p) {
+                continue;
+            }
+            if input::set_nonblocking(&d).is_ok() {
+                devices.push((p, d));
+                added += 1;
+            }
+        }
+        if added > 0 || devices.is_empty() {
+            eprintln!(
+                "keystroke-noise: hotplug rescan → {} device(s) (+{added})",
+                devices.len()
+            );
+        }
+    }
+    if devices.is_empty() {
+        std::thread::sleep(Duration::from_millis(400));
+    }
+}
+
 fn run_daemon() -> Result<()> {
     ensure_default_sounds()?;
     let mut cfg = Config::load()?;
@@ -114,8 +145,17 @@ fn run_daemon() -> Result<()> {
             use notify::EventKind;
             if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                 if let Ok(new_cfg) = Config::load() {
+                    let reopen = config::input_rescan_required(&cfg, &new_cfg);
                     cfg = new_cfg;
                     let _ = engine.reload(&cfg);
+                    if reopen {
+                        // Drop the previous set so the shared rescan rebuilds it.
+                        // An additive merge would keep the old keyboard/mouse after
+                        // `device` or `mouse_enabled` changed.
+                        devices.clear();
+                        rescan_inputs(&mut devices, &cfg);
+                        last_rescan = std::time::Instant::now();
+                    }
                 }
             }
         }
@@ -197,29 +237,7 @@ fn run_daemon() -> Result<()> {
         // (Old bug: only rescanned when devices became empty, so a sticky dead FD blocked recovery.)
         if last_rescan.elapsed() >= RESCAN_EVERY || devices.is_empty() {
             last_rescan = std::time::Instant::now();
-            if let Ok(found) = input::open_input_devices(&cfg.device, cfg.mouse_enabled) {
-                let open_paths: std::collections::HashSet<_> =
-                    devices.iter().map(|(p, _)| p.clone()).collect();
-                let mut added = 0usize;
-                for (p, d) in found {
-                    if open_paths.contains(&p) {
-                        continue;
-                    }
-                    if input::set_nonblocking(&d).is_ok() {
-                        devices.push((p, d));
-                        added += 1;
-                    }
-                }
-                if added > 0 || devices.is_empty() {
-                    eprintln!(
-                        "keystroke-noise: hotplug rescan → {} device(s) (+{added})",
-                        devices.len()
-                    );
-                }
-            }
-            if devices.is_empty() {
-                std::thread::sleep(Duration::from_millis(400));
-            }
+            rescan_inputs(&mut devices, &cfg);
         }
     }
     Ok(())

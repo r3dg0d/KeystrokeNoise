@@ -124,6 +124,15 @@ impl Config {
     }
 }
 
+/// Whether a config hot-reload must rebuild the input device set.
+///
+/// Only `device` and `mouse_enabled` choose which evdev nodes are opened.
+/// Volume, sound files, and `enabled` are applied by the audio engine and
+/// must not reopen keyboards or mice. This does not touch `/dev/input`.
+pub fn input_rescan_required(previous: &Config, next: &Config) -> bool {
+    previous.device != next.device || previous.mouse_enabled != next.mouse_enabled
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Normal,
@@ -216,5 +225,66 @@ mod tests {
                 "repo assets/{name} missing — seed copy has nothing to install"
             );
         }
+    }
+
+    #[test]
+    fn input_rescan_only_when_device_or_mouse_enabled_changes() {
+        let prev = Config::default();
+        assert!(
+            !input_rescan_required(&prev, &prev),
+            "identical config must not reopen inputs"
+        );
+
+        let mut audio_only = prev.clone();
+        audio_only.volume = 0.1;
+        audio_only.normal_volume = 0.2;
+        audio_only.space_volume = 0.3;
+        audio_only.enter_volume = 0.4;
+        audio_only.modifier_volume = 0.5;
+        audio_only.mouse_volume = 0.6;
+        audio_only.enabled = false;
+        audio_only.normal_sound = "other.wav".into();
+        audio_only.space_sound = "s.wav".into();
+        audio_only.enter_sound = "e.wav".into();
+        audio_only.modifier_sound = "m.wav".into();
+        audio_only.mouse_left_sound = "ml.wav".into();
+        audio_only.mouse_middle_sound = "mm.wav".into();
+        audio_only.mouse_right_sound = "mr.wav".into();
+        assert!(
+            !input_rescan_required(&prev, &audio_only),
+            "audio-only reload must not reopen inputs"
+        );
+
+        let mut mouse_off = prev.clone();
+        mouse_off.mouse_enabled = false;
+        assert!(input_rescan_required(&prev, &mouse_off));
+        assert!(input_rescan_required(&mouse_off, &prev));
+
+        let mut explicit = prev.clone();
+        explicit.device = "/dev/input/event0".into();
+        assert!(
+            input_rescan_required(&prev, &explicit),
+            "auto → explicit device"
+        );
+        let mut other = explicit.clone();
+        other.device = "/dev/input/event1".into();
+        assert!(
+            input_rescan_required(&explicit, &other),
+            "device path change"
+        );
+        assert!(input_rescan_required(&explicit, &prev), "explicit → auto");
+
+        let mut same_selection = explicit.clone();
+        same_selection.volume = 0.01;
+        same_selection.enabled = false;
+        same_selection.mouse_enabled = true;
+        assert!(
+            !input_rescan_required(&explicit, &same_selection),
+            "same device and mouse_enabled"
+        );
+
+        let mut both = other.clone();
+        both.mouse_enabled = false;
+        assert!(input_rescan_required(&explicit, &both));
     }
 }
