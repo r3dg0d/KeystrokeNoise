@@ -63,7 +63,7 @@ fn ensure_default_sounds() -> Result<()> {
             .unwrap_or_default(),
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
     ];
-    for name in ["normal.wav", "space.wav", "enter.wav", "modifier.wav"] {
+    for name in Config::packaged_primary_sounds() {
         let dest = assets.join(name);
         if dest.exists() {
             continue;

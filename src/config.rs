@@ -107,6 +107,21 @@ impl Config {
         }
         Self::assets_dir().join(name)
     }
+
+    /// Primary WAVs that `init` / the daemon seed into the user sounds dir.
+    /// Must cover every default `*_sound` filename — AudioEngine::new fails if any
+    /// primary (including mouse) is missing from the sounds directory.
+    pub fn packaged_primary_sounds() -> &'static [&'static str] {
+        &[
+            "normal.wav",
+            "space.wav",
+            "enter.wav",
+            "modifier.wav",
+            "mouse-left.wav",
+            "mouse-middle.wav",
+            "mouse-right.wav",
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,5 +184,37 @@ mod tests {
             cfg.sound_path("/opt/x/click.wav"),
             PathBuf::from("/opt/x/click.wav")
         );
+    }
+
+    #[test]
+    fn packaged_primaries_cover_every_default_sound_field() {
+        let cfg = Config::default();
+        let seeds: std::collections::HashSet<_> =
+            Config::packaged_primary_sounds().iter().copied().collect();
+        for name in [
+            cfg.normal_sound.as_str(),
+            cfg.space_sound.as_str(),
+            cfg.enter_sound.as_str(),
+            cfg.modifier_sound.as_str(),
+            cfg.mouse_left_sound.as_str(),
+            cfg.mouse_middle_sound.as_str(),
+            cfg.mouse_right_sound.as_str(),
+        ] {
+            assert!(
+                seeds.contains(name),
+                "packaged_primary_sounds is missing {name}; init would leave AudioEngine unable to load it"
+            );
+        }
+    }
+
+    #[test]
+    fn packaged_primaries_exist_in_repo_assets() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        for name in Config::packaged_primary_sounds() {
+            assert!(
+                root.join(name).is_file(),
+                "repo assets/{name} missing — seed copy has nothing to install"
+            );
+        }
     }
 }
