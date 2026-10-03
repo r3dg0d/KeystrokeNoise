@@ -44,6 +44,30 @@ fn load_file(path: &PathBuf) -> Result<Vec<u8>> {
     std::fs::read(path).with_context(|| format!("load sound {}", path.display()))
 }
 
+struct LoadedBanks {
+    normal: Vec<Vec<u8>>,
+    space: Vec<Vec<u8>>,
+    enter: Vec<Vec<u8>>,
+    modifier: Vec<Vec<u8>>,
+    mouse_left: Vec<Vec<u8>>,
+    mouse_middle: Vec<Vec<u8>>,
+    mouse_right: Vec<Vec<u8>>,
+}
+
+fn load_banks(cfg: &Config) -> Result<LoadedBanks> {
+    Ok(LoadedBanks {
+        normal: load_bank(cfg, &cfg.normal_sound, "buckle", "normal-")?,
+        space: load_bank(cfg, &cfg.space_sound, "buckle", "space")?,
+        enter: load_bank(cfg, &cfg.enter_sound, "buckle", "enter")?,
+        modifier: load_bank(cfg, &cfg.modifier_sound, "buckle", "modifier")?,
+        mouse_left: load_bank(cfg, &cfg.mouse_left_sound, "mouse", "mouse-left")?,
+        mouse_middle: load_bank(cfg, &cfg.mouse_middle_sound, "mouse", "mouse-middle")
+            .or_else(|_| load_bank(cfg, &cfg.mouse_middle_sound, "mouse", "mouse-left"))?,
+        mouse_right: load_bank(cfg, &cfg.mouse_right_sound, "mouse", "mouse-right")
+            .or_else(|_| load_bank(cfg, &cfg.mouse_right_sound, "mouse", "mouse-left"))?,
+    })
+}
+
 fn load_bank(cfg: &Config, primary: &str, subdir: &str, glob_prefix: &str) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
     let primary_path = cfg.sound_path(primary);
@@ -81,24 +105,35 @@ fn load_bank(cfg: &Config, primary: &str, subdir: &str, glob_prefix: &str) -> Re
 impl AudioEngine {
     pub fn new(cfg: &Config) -> Result<Self> {
         let (stream, handle) = OutputStream::try_default().context("open audio output")?;
+        let banks = load_banks(cfg)?;
         Ok(Self {
             _stream: stream,
             handle,
             gate: Arc::new(Mutex::new(())),
-            normal: load_bank(cfg, &cfg.normal_sound, "buckle", "normal-")?,
-            space: load_bank(cfg, &cfg.space_sound, "buckle", "space")?,
-            enter: load_bank(cfg, &cfg.enter_sound, "buckle", "enter")?,
-            modifier: load_bank(cfg, &cfg.modifier_sound, "buckle", "modifier")?,
-            mouse_left: load_bank(cfg, &cfg.mouse_left_sound, "mouse", "mouse-left")?,
-            mouse_middle: load_bank(cfg, &cfg.mouse_middle_sound, "mouse", "mouse-middle")
-                .or_else(|_| load_bank(cfg, &cfg.mouse_middle_sound, "mouse", "mouse-left"))?,
-            mouse_right: load_bank(cfg, &cfg.mouse_right_sound, "mouse", "mouse-right")
-                .or_else(|_| load_bank(cfg, &cfg.mouse_right_sound, "mouse", "mouse-left"))?,
+            normal: banks.normal,
+            space: banks.space,
+            enter: banks.enter,
+            modifier: banks.modifier,
+            mouse_left: banks.mouse_left,
+            mouse_middle: banks.mouse_middle,
+            mouse_right: banks.mouse_right,
         })
     }
 
+    /// Swap cached WAV bytes. Does not drop or reopen the existing `OutputStream`.
+    ///
+    /// Volume and `enabled` are read from `Config` in `play` and must not come
+    /// through here. Call only when `sound_banks_reload_required` is true; a
+    /// failed load leaves the previous banks and the open stream in place.
     pub fn reload(&mut self, cfg: &Config) -> Result<()> {
-        *self = Self::new(cfg)?;
+        let banks = load_banks(cfg)?;
+        self.normal = banks.normal;
+        self.space = banks.space;
+        self.enter = banks.enter;
+        self.modifier = banks.modifier;
+        self.mouse_left = banks.mouse_left;
+        self.mouse_middle = banks.mouse_middle;
+        self.mouse_right = banks.mouse_right;
         Ok(())
     }
 

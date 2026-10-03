@@ -146,8 +146,13 @@ fn run_daemon() -> Result<()> {
             if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                 if let Ok(new_cfg) = Config::load() {
                     let reopen = config::input_rescan_required(&cfg, &new_cfg);
+                    let reload_banks = config::sound_banks_reload_required(&cfg, &new_cfg);
                     cfg = new_cfg;
-                    let _ = engine.reload(&cfg);
+                    // Volume and enabled are read in play(). Re-read WAVs only
+                    // when a sound path changed, and never reopen PipeWire here.
+                    if reload_banks {
+                        let _ = engine.reload(&cfg);
+                    }
                     if reopen {
                         // Drop the previous set so the shared rescan rebuilds it.
                         // An additive merge would keep the old keyboard/mouse after

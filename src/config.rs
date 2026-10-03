@@ -127,10 +127,26 @@ impl Config {
 /// Whether a config hot-reload must rebuild the input device set.
 ///
 /// Only `device` and `mouse_enabled` choose which evdev nodes are opened.
-/// Volume, sound files, and `enabled` are applied by the audio engine and
-/// must not reopen keyboards or mice. This does not touch `/dev/input`.
+/// Volume and `enabled` are read on each play. Sound files are re-read only
+/// when their paths change (`sound_banks_reload_required`). None of those
+/// reopen keyboards or mice. This does not touch `/dev/input`.
 pub fn input_rescan_required(previous: &Config, next: &Config) -> bool {
     previous.device != next.device || previous.mouse_enabled != next.mouse_enabled
+}
+
+/// Whether a config hot-reload must re-read WAV banks.
+///
+/// Only the `*_sound` fields choose which files are loaded. Volume and
+/// `enabled` are applied in `AudioEngine::play` from the live config and must
+/// not reopen PipeWire or re-read banks. This does not open an audio device.
+pub fn sound_banks_reload_required(previous: &Config, next: &Config) -> bool {
+    previous.normal_sound != next.normal_sound
+        || previous.space_sound != next.space_sound
+        || previous.enter_sound != next.enter_sound
+        || previous.modifier_sound != next.modifier_sound
+        || previous.mouse_left_sound != next.mouse_left_sound
+        || previous.mouse_middle_sound != next.mouse_middle_sound
+        || previous.mouse_right_sound != next.mouse_right_sound
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,5 +302,51 @@ mod tests {
         let mut both = other.clone();
         both.mouse_enabled = false;
         assert!(input_rescan_required(&explicit, &both));
+    }
+
+    #[test]
+    fn sound_banks_reload_only_when_a_sound_path_changes() {
+        let prev = Config::default();
+        assert!(
+            !sound_banks_reload_required(&prev, &prev),
+            "identical config must not reload banks"
+        );
+
+        let mut knobs = prev.clone();
+        knobs.volume = 0.1;
+        knobs.normal_volume = 0.2;
+        knobs.space_volume = 0.3;
+        knobs.enter_volume = 0.4;
+        knobs.modifier_volume = 0.5;
+        knobs.mouse_volume = 0.6;
+        knobs.enabled = false;
+        knobs.mouse_enabled = false;
+        knobs.device = "/dev/input/event3".into();
+        assert!(
+            !sound_banks_reload_required(&prev, &knobs),
+            "volume, enabled, device, and mouse_enabled must not reload banks"
+        );
+
+        let mut next = prev.clone();
+        next.normal_sound = "other-normal.wav".into();
+        assert!(sound_banks_reload_required(&prev, &next));
+        next = prev.clone();
+        next.space_sound = "other-space.wav".into();
+        assert!(sound_banks_reload_required(&prev, &next));
+        next = prev.clone();
+        next.enter_sound = "other-enter.wav".into();
+        assert!(sound_banks_reload_required(&prev, &next));
+        next = prev.clone();
+        next.modifier_sound = "other-modifier.wav".into();
+        assert!(sound_banks_reload_required(&prev, &next));
+        next = prev.clone();
+        next.mouse_left_sound = "other-left.wav".into();
+        assert!(sound_banks_reload_required(&prev, &next));
+        next = prev.clone();
+        next.mouse_middle_sound = "other-middle.wav".into();
+        assert!(sound_banks_reload_required(&prev, &next));
+        next = prev.clone();
+        next.mouse_right_sound = "other-right.wav".into();
+        assert!(sound_banks_reload_required(&prev, &next));
     }
 }
